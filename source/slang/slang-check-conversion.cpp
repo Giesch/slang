@@ -348,6 +348,153 @@ bool SemanticsVisitor::isCStyleType(Type* type, HashSet<Type*>& isVisit)
     return cacheResult(true);
 }
 
+static const char* getDeclVisibilityString(DeclVisibility vis)
+{
+    switch (vis)
+    {
+    case DeclVisibility::Private:
+        return "private";
+    case DeclVisibility::Internal:
+        return "internal";
+    case DeclVisibility::Public:
+        return "public";
+    default:
+        return "unknown";
+    }
+}
+
+void SemanticsVisitor::diagnoseNonCStyleType(Type* type, HashSet<Type*>& diagVisit)
+{
+    diagVisit.add(type);
+
+    // 1. Slang 2026 language fix: an interface type is not C-style.
+    if (isSlang2026OrLater(this))
+    {
+        if (isDeclRefTypeOf<InterfaceDecl>(type))
+        {
+            getSink()->diagnose(SourceLoc(), Diagnostics::initializerListIsInterfaceType, type);
+            return;
+        }
+    }
+
+    // 2. Opaque types are not C-style.
+    {
+        TypeTag tags = getTypeTags(type);
+        const bool isOpaque = ((int)tags & (int)TypeTag::Opaque) != 0;
+        if (isOpaque)
+        {
+            getSink()->diagnose(SourceLoc(), Diagnostics::initializerListIsOpaqueType, type);
+            return;
+        }
+    }
+
+    // 3. Check tuple type members recursively.
+    if (auto tupleType = as<TupleType>(type))
+    {
+        for (Index i = 0; i < tupleType->getMemberCount(); i++)
+        {
+            auto elementType = tupleType->getMember(i);
+            if (diagVisit.contains(elementType))
+                continue;
+            HashSet<Type*> checkVisit;
+            if (!isCStyleType(elementType, checkVisit))
+            {
+                diagnoseNonCStyleType(elementType, diagVisit);
+                return;
+            }
+        }
+        return;
+    }
+
+    // 4. Check struct-specific issues.
+    if (auto structDecl = isDeclRefTypeOf<StructDecl>(type).getDecl())
+    {
+        // 4a. Inheritance from non-interface type
+        for (auto inheritanceDecl : structDecl->getMembersOfType<InheritanceDecl>())
+        {
+            if (!isDeclRefTypeOf<InterfaceDecl>(inheritanceDecl->base.type))
+            {
+                getSink()->diagnose(
+                    inheritanceDecl->loc,
+                    Diagnostics::initializerListTypeHasInheritance,
+                    type,
+                    inheritanceDecl->base.type);
+                return;
+            }
+        }
+
+        // 4b. Explicit constructor
+        if (_hasExplicitConstructor(structDecl, true))
+        {
+            getSink()->diagnose(
+                structDecl->loc,
+                Diagnostics::initializerListTypeHasExplicitConstructor,
+                type);
+            return;
+        }
+
+        // 4c. Field visibility mismatch
+        DeclVisibility structVisibility = getDeclVisibility(structDecl);
+        for (auto varDecl : structDecl->getMembersOfType<VarDeclBase>())
+        {
+            DeclVisibility fieldVisibility = getDeclVisibility(varDecl);
+            if (fieldVisibility != structVisibility)
+            {
+                getSink()->diagnose(
+                    varDecl->loc,
+                    Diagnostics::initializerListFieldVisibilityMismatch,
+                    varDecl->getName(),
+                    getDeclVisibilityString(fieldVisibility),
+                    structDecl->getName(),
+                    getDeclVisibilityString(structVisibility));
+                return;
+            }
+        }
+
+        // 4d. Field with non-C-style type
+        for (auto varDecl : structDecl->getMembersOfType<VarDeclBase>())
+        {
+            Type* varType = varDecl->getType();
+            if (diagVisit.contains(varType))
+                continue;
+            HashSet<Type*> checkVisit;
+            if (!isCStyleType(varType, checkVisit))
+            {
+                getSink()->diagnose(
+                    varDecl->loc,
+                    Diagnostics::initializerListFieldTypeNotCStyle,
+                    varDecl->getName(),
+                    varType);
+                diagnoseNonCStyleType(varType, diagVisit);
+                return;
+            }
+        }
+        return;
+    }
+
+    // 5. Unsized array
+    if (auto arrayType = as<ArrayExpressionType>(type))
+    {
+        if (arrayType->isUnsized())
+        {
+            getSink()->diagnose(SourceLoc(), Diagnostics::initializerListIsUnsizedArray, type);
+            return;
+        }
+
+        // Array with non-C-style element type
+        auto elementType = arrayType->getElementType();
+        if (!diagVisit.contains(elementType))
+        {
+            HashSet<Type*> checkVisit;
+            if (!isCStyleType(elementType, checkVisit))
+            {
+                diagnoseNonCStyleType(elementType, diagVisit);
+                return;
+            }
+        }
+    }
+}
+
 Expr* SemanticsVisitor::_createCtorInvokeExpr(
     Type* toType,
     const SourceLoc& loc,
@@ -462,6 +609,9 @@ bool SemanticsVisitor::createInvokeExprForSynthesizedCtor(
                 fromInitializerListExpr->loc,
                 Diagnostics::cannotUseInitializerListForType,
                 toType);
+
+            HashSet<Type*> diagVisit;
+            diagnoseNonCStyleType(toType, diagVisit);
         }
 
         return false;

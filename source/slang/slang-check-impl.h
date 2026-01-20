@@ -3032,6 +3032,7 @@ public:
         StructDecl* structDecl,
         ConstructorDecl::ConstructorFlavor flavor);
     bool isCStyleType(Type* type, HashSet<Type*>& isVisit);
+    void diagnoseNonCStyleType(Type* type, HashSet<Type*>& diagVisit);
 
     void addVisibilityModifier(Decl* decl, DeclVisibility vis);
 

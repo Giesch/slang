@@ -84,6 +84,26 @@ DIAGNOSTIC(-1, Note, includeOutput, "include $0")
 DIAGNOSTIC(-1, Note, genericSignatureTried, "see declaration of $0")
 DIAGNOSTIC(-1, Note, entryPointCandidate, "see candidate declaration for entry point '$0'")
 
+DIAGNOSTIC(
+    -1,
+    Note,
+    initializerListFieldVisibilityMismatch,
+    "field '$0' has $1 visibility, but struct '$2' is $3")
+DIAGNOSTIC(
+    -1,
+    Note,
+    initializerListTypeHasInheritance,
+    "'$0' inherits from non-interface type '$1'")
+DIAGNOSTIC(-1, Note, initializerListTypeHasExplicitConstructor, "'$0' has an explicit constructor")
+DIAGNOSTIC(
+    -1,
+    Note,
+    initializerListFieldTypeNotCStyle,
+    "field '$0' has type '$1' which cannot use initializer lists")
+DIAGNOSTIC(-1, Note, initializerListIsInterfaceType, "'$0' is an interface type")
+DIAGNOSTIC(-1, Note, initializerListIsOpaqueType, "'$0' is an opaque type")
+DIAGNOSTIC(-1, Note, initializerListIsUnsizedArray, "'$0' is an unsized array")
+
 //
 // 0xxxx -  Command line and interaction with host platform APIs.
 //
