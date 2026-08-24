@@ -25,12 +25,19 @@ The following CMake variables control the standard modules configuration:
   - **Linux/Mac**: `lib/slang-standard-module-${SLANG_VERSION_NUMERIC}` (installed next to libslang.so/libslang.dylib)
   - The installation directory for all standard modules in release packages
 
+- `SLANG_EMBED_STANDARD_MODULES` (default: `OFF`)
+  - Embed the compiled modules in the slang library, so `import` resolves them with no files on disk
+  - Requires `SLANG_EMBED_CORE_MODULE=ON`
+  - See "Embedding" below
+
 ## Directory Structure
 
 ```
 source/standard-modules/
 ├── CMakeLists.txt                          # Central configuration for all modules
 ├── slang-standard-module-config.h.in      # Configuration template
+├── slang-embedded-standard-modules.h       # Lookup of an embedded module by path
+├── slang-embedded-standard-modules.cpp     # Embedded module bytes (or nullptr stubs)
 ├── README.md                               # This file
 ├── neural/                                 # Neural module subdirectory
 │   ├── CMakeLists.txt                      # Neural module build logic
@@ -44,19 +51,24 @@ source/standard-modules/
 ## Files Involved
 
 ### Configuration Template
+
 - `source/standard-modules/slang-standard-module-config.h.in` - Template header file with CMake variables
 
 ### Generated Files
+
 - `build/source/standard-modules/slang-standard-module-config-header/slang-standard-module-config.h` - Generated configuration header (internal only)
 
 ### CMake Files
+
 - `source/standard-modules/CMakeLists.txt` - Defines configuration variables for all standard modules and generates the header
 - `source/standard-modules/neural/CMakeLists.txt` - Neural module specific build logic
 - `source/standard-modules/experimental/CMakeLists.txt` - Experimental module specific build logic
 - `source/slang/CMakeLists.txt` - Uses the standard module config header internally for the slang library
 
 ### C++ Code
-- `source/slang/slang-session.cpp` - Uses the configuration constants to locate standard modules at runtime
+
+- `source/slang/slang-session.cpp` - Uses the configuration constants to locate standard modules at runtime, after consulting the embedded modules
+- `source/standard-modules/slang-embedded-standard-modules.cpp` - Provides `slang_getEmbeddedStandardModule(path)`, which returns the embedded blob for a module path or nullptr
 
 ## How to Modify
 
@@ -74,7 +86,7 @@ To change the standard module paths:
 2. The slang library includes the header directory privately (not exposed in public API)
 3. C++ code includes `slang-standard-module-config.h` and uses the constants internally
 4. Each module's CMakeLists.txt uses the same variables for consistent paths
-5. Standard modules are compiled using `slangc` at build time
+5. Standard modules are compiled using `slang-bootstrap` at build time
 6. Standard modules are placed under subdirectories next to libslang.so/slang.dll that match
    their import paths:
    - **Build - Windows**:
@@ -97,6 +109,21 @@ This ensures that both the C++ runtime search logic and the CMake build logic us
 
 The standard modules are automatically co-located with the slang library for easy discovery at runtime.
 
+## Embedding
+
+With `SLANG_EMBED_STANDARD_MODULES=ON`, the build also embeds each compiled module in the slang library:
+
+1. `slang-embed -binary <module>.slang-module <header>` writes the module bytes as a byte-array initializer list. The headers are `slang-neural-module-generated.h` and `slang-workgraph-module-generated.h` under `build/source/standard-modules/<module>/`.
+2. `slang-embedded-standard-modules.cpp` includes the headers into `static const uint8_t` arrays and exposes them through `slang_getEmbeddedStandardModule(const char* modulePath)`. The path is the hierarchical module name with `/` separators (`slang/neural`, `experimental/workgraph`).
+3. The object library `slang-embedded-standard-modules` is linked into the slang library. Without the option, `slang-no-embedded-standard-modules` is linked instead and the lookup returns nullptr.
+4. `slang-session.cpp` consults the embedded lookup after the session search paths and before the on-disk standard module directory.
+
+The option requires `SLANG_EMBED_CORE_MODULE=ON`. `slang-bootstrap` compiles the modules, and with the core module not embedded it links the slang library itself, which would make the embedded module a dependency of its own compiler.
+
+The on-disk directory is still built and installed with the option on. A distribution that relies on the embedded modules can omit it.
+
+To embed a new standard module, generate its header with `slang_add_embedded_standard_module_header` in the module's CMakeLists.txt, add the header's target to `generate_standard_module_headers`, and add the module path to `slang_getEmbeddedStandardModule`.
+
 ## Cross-Compilation Support
 
 When cross-compiling (e.g., building ARM64 binaries on an x86_64 host), the standard modules need to be compiled using a host-platform compiler, since the target-platform `slangc` cannot run on the build host.
@@ -104,6 +131,7 @@ When cross-compiling (e.g., building ARM64 binaries on an x86_64 host), the stan
 The build system automatically uses `SLANG_GENERATORS_PATH` to locate `slang-bootstrap`, a standalone Slang compiler with no external dependencies:
 
 1. First, build the generators for the host platform and install them:
+
    ```bash
    cmake --workflow --preset generators --fresh
    cmake --install build --config Release --component generators --prefix build-platform-generators
@@ -112,6 +140,7 @@ The build system automatically uses `SLANG_GENERATORS_PATH` to locate `slang-boo
    This installs `slang-bootstrap` along with other generator tools.
 
 2. Then, configure the cross-compilation build with `SLANG_GENERATORS_PATH`:
+
    ```bash
    cmake --preset default --fresh \
      -DSLANG_GENERATORS_PATH=build-platform-generators/bin \
@@ -125,9 +154,10 @@ The build system automatically uses `SLANG_GENERATORS_PATH` to locate `slang-boo
    ```
 
 The build system automatically:
+
 - Detects when `SLANG_GENERATORS_PATH` is set
-- Uses `slang-bootstrap` from that path (a standalone tool with no dependencies)
-- Falls back to `slangc` for normal (non-cross-compilation) builds
+- Uses `slang-bootstrap` and `slang-embed` from that path
+- Uses the targets from the current build for normal (non-cross-compilation) builds
 
 This is the same pattern used in the release workflow for cross-compilation scenarios.
 

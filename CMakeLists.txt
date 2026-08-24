@@ -192,6 +192,11 @@ option(
     OFF
 )
 option(
+    SLANG_EMBED_STANDARD_MODULES
+    "Embed the pre-compiled standard modules (slang.neural, experimental.workgraph) in slang-compiler, so `import` resolves them without files on disk. Requires SLANG_EMBED_CORE_MODULE=ON."
+    OFF
+)
+option(
     SLANG_BUNDLE_STATIC_LIB
     "Merge slang-compiler and every static library it links into a single self-contained archive, so consumers link one library instead of a dozen. Requires SLANG_LIB_TYPE=STATIC."
     OFF
@@ -537,6 +542,13 @@ if(NOT SLANG_EMBED_CORE_MODULE AND NOT SLANG_EMBED_CORE_MODULE_SOURCE)
     message(
         SEND_ERROR
         "One of SLANG_EMBED_CORE_MODULE and SLANG_EMBED_CORE_MODULE_SOURCE must be enabled"
+    )
+endif()
+
+if(SLANG_EMBED_STANDARD_MODULES AND NOT SLANG_EMBED_CORE_MODULE)
+    message(
+        SEND_ERROR
+        "SLANG_EMBED_STANDARD_MODULES requires SLANG_EMBED_CORE_MODULE: the modules are compiled by slang-bootstrap, which links the slang library when the core module is not embedded, so embedding them into that same library is a dependency cycle"
     )
 endif()
 

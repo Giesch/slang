@@ -82,6 +82,14 @@ add_custom_command(
 add_custom_target(slang-neural-module ALL DEPENDS ${neural_module_file})
 set_target_properties(slang-neural-module PROPERTIES FOLDER generated)
 
+if(SLANG_EMBED_STANDARD_MODULES)
+    slang_add_embedded_standard_module_header(
+        ${neural_module_file}
+        slang-neural-module-generated.h
+        slang-neural-module-header
+    )
+endif()
+
 # Install the neural directory to the configured location in the release package
 # Installs into <install-dir>/slang/ to match the `import slang.neural;` convention.
 install(

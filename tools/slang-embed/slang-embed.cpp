@@ -68,6 +68,7 @@ struct App
     Slang::HashSet<Slang::String> includedFiles;
     size_t charCount = 0;
     bool useNewStringLit = true;
+    bool binaryMode = false;
 
     void parseOptions(int argc, char** argv)
     {
@@ -81,22 +82,26 @@ struct App
         // Parse remaining arguments - we need at least inputPath
         if (argc < 1)
         {
-            fprintf(stderr, "usage: %s inputPath [outputPath] [-I<includeDir> ...]\n", appName);
+            fprintf(
+                stderr,
+                "usage: %s inputPath [outputPath] [-binary] [-I<includeDir> ...]\n",
+                appName);
             exit(1);
         }
 
-        // Get input path (first positional argument)
-        inputPath = *argv++;
-        argc--;
-
-        // Process remaining arguments
+        // Process arguments: options may appear anywhere; the first positional
+        // argument is the input path and the second is the output path.
         while (argc > 0)
         {
             char* arg = *argv++;
             argc--;
 
+            if (strcmp(arg, "-binary") == 0)
+            {
+                binaryMode = true;
+            }
             // Check for -I prefix for include directories
-            if (strncmp(arg, "-I", 2) == 0)
+            else if (strncmp(arg, "-I", 2) == 0)
             {
                 // Check if this is a concatenated string of include directories
                 char* startPtr = arg;
@@ -146,7 +151,10 @@ struct App
                     startPtr = nextIPos;
                 }
             }
-            // Otherwise treat as output path if not already set
+            else if (!inputPath)
+            {
+                inputPath = arg;
+            }
             else if (!outputPath)
             {
                 outputPath = arg;
@@ -154,7 +162,10 @@ struct App
             else
             {
                 fprintf(stderr, "unexpected argument: %s\n", arg);
-                fprintf(stderr, "usage: %s inputPath [outputPath] [-I<includeDir> ...]\n", appName);
+                fprintf(
+                    stderr,
+                    "usage: %s inputPath [outputPath] [-binary] [-I<includeDir> ...]\n",
+                    appName);
                 exit(1);
             }
         }
@@ -162,7 +173,10 @@ struct App
         // Validate we have the required arguments
         if (!inputPath)
         {
-            fprintf(stderr, "usage: %s inputPath [outputPath] [-I<includeDir> ...]\n", appName);
+            fprintf(
+                stderr,
+                "usage: %s inputPath [outputPath] [-binary] [-I<includeDir> ...]\n",
+                appName);
             exit(1);
         }
     }
@@ -340,6 +354,31 @@ struct App
         return Slang::StringUtil::getAtInSplit(includeLine, ' ', 0);
     }
 
+    // Write the bytes of the input file as a comma-separated list of hexadecimal
+    // integer literals, so the output can be placed inside the initializer of a
+    // `uint8_t` array with `#include`. Binary inputs such as `.slang-module` files
+    // cannot go through the text path, which reads in text mode and emits string
+    // literals.
+    void processBinaryInputFile(FILE* outputFile)
+    {
+        Slang::List<unsigned char> bytes;
+        if (SLANG_FAILED(Slang::File::readAllBytes(inputPath, bytes)))
+        {
+            fprintf(stderr, "%s: error: failed to read '%s'\n", appName, inputPath);
+            exit(1);
+        }
+
+        fprintf(outputFile, "// generated code; do not edit\n");
+        const Slang::Index count = bytes.getCount();
+        for (Slang::Index i = 0; i < count; ++i)
+        {
+            fprintf(outputFile, "0x%02x,", bytes[i]);
+            if ((i & 15) == 15)
+                fputc('\n', outputFile);
+        }
+        fputc('\n', outputFile);
+    }
+
     void processInputFile()
     {
         // Note: Eventually we might support multiple input files in a
@@ -362,6 +401,12 @@ struct App
         {
             fprintf(stderr, "%s: error: failed to open '%s' for reading\n", appName, outputPath);
             exit(1);
+        }
+
+        if (binaryMode)
+        {
+            processBinaryInputFile(outputFile);
+            return;
         }
 
         // We want to derive a variable name based on the name of

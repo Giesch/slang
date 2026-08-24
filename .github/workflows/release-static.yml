@@ -98,6 +98,7 @@ jobs:
             -DSLANG_ENABLE_RELEASE_DEBUG_INFO=OFF
             -DSLANG_ENABLE_RELEASE_LTO=OFF
             -DSLANG_STANDARD_MODULE_DEVELOP_BUILD=OFF
+            -DSLANG_EMBED_STANDARD_MODULES=ON
           )
           # Windows needs three more. Dawn defaults to ON there and fetches
           # webgpu_dawn.dll; the SPIRV-Tools mimalloc replacement would
@@ -237,12 +238,43 @@ jobs:
           done
           echo "slangc produced optimized, disassembled and validated SPIR-V."
 
+      # The standard modules are embedded in the library
+      # (SLANG_EMBED_STANDARD_MODULES). Remove the on-disk copies from the
+      # install tree first, so a passing compile proves the embedded bytes are
+      # what resolved the import.
+      - name: Smoke-test embedded standard modules
+        run: |
+          slangc=install/bin/slangc
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            slangc=install/bin/slangc.exe
+          fi
+          rm -rf install/lib/slang-standard-module-* install/bin/slang-standard-module-*
+
+          "$slangc" extras/static-release/smoke-neural.slang -experimental-feature \
+            -target spirv -entry computeMain -o smoke-neural.spv
+          "$slangc" extras/static-release/smoke-workgraph.slang -experimental-feature \
+            -target hlsl -stage node -entry main -profile lib_6_8 -o smoke-workgraph.hlsl
+
+          for f in smoke-neural.spv smoke-workgraph.hlsl; do
+            if [[ ! -s "$f" ]]; then
+              echo "::error::$f is missing or empty"
+              exit 1
+            fi
+          done
+
+          if "$slangc" extras/static-release/smoke-neural.slang \
+            -target spirv -entry computeMain -o smoke-neural-gated.spv 2>gated.log; then
+            echo "::error::import slang.neural compiled without -experimental-feature"
+            exit 1
+          fi
+          grep -q "experimental module" gated.log
+          echo "slang.neural and experimental.workgraph resolved from the embedded modules."
+
       # Stage exactly what ships. libslang-compiler.a is deliberately left
       # behind: it is installed alongside the bundle but cannot be linked on its
-      # own, so shipping it would only mislead. The .slang-module files for
-      # slang.neural and experimental.workgraph are dropped for the same reason
-      # they are out of scope for a static build -- they are resolved from disk
-      # relative to the host binary, which a static link cannot absorb.
+      # own, so shipping it would only mislead. The standard modules are
+      # embedded in the archive, so lib/slang-standard-module-<version>/ is not
+      # staged.
       - name: Stage release tree
         id: stage
         env:
@@ -382,7 +414,9 @@ jobs:
 
       # Verify the packaged tree, not the build tree: compile and link a
       # consumer against nothing but the staged include/ and the one archive.
-      # This is the check that exercises the macOS and Windows merge paths.
+      # This is the check that exercises the macOS and Windows merge paths. It
+      # also imports slang.neural through the API, which proves the embedded
+      # module bytes are members of the archive and not only of slangc.
       - name: Consumer link check
         env:
           BASE: ${{ steps.stage.outputs.base }}

@@ -5,6 +5,7 @@
 #include "core/slang-shared-library.h"
 #include "slang-check-impl.h"
 #include "slang-compiler.h"
+#include "slang-embedded-standard-modules.h"
 #include "slang-lower-to-ir.h"
 #include "slang-mangle.h"
 #include "slang-markdown.h"
@@ -49,6 +50,55 @@ static String findStandardModulePath(String const& stdModuleDirPath, String cons
         return stdModulePath;
 
     return String();
+}
+
+// Diagnose an import of an experimental standard module when the session has not
+// enabled experimental features. Standard modules that opt in carry an
+// `IRExperimentalModuleDecoration` on their module instruction.
+static void diagnoseExperimentalStandardModule(
+    Linkage* linkage,
+    Module* module,
+    Name* moduleName,
+    SourceLoc const& requestingLoc,
+    DiagnosticSink* sink)
+{
+    auto irModule = module->getIRModule();
+    if (!irModule)
+        return;
+    if (!irModule->getModuleInst()->findDecoration<IRExperimentalModuleDecoration>())
+        return;
+    if (linkage->m_optionSet.getBoolOption(CompilerOptionName::ExperimentalFeature))
+        return;
+    sink->diagnose(Diagnostics::NeedToEnableExperimentFeature{
+        .module = getText(moduleName),
+        .loc = requestingLoc});
+}
+
+// Load a standard module from the blob embedded in the slang library, if the
+// build embedded one for `moduleName`. Returns nullptr when no module is
+// embedded under that name or when the blob fails to load.
+static RefPtr<Module> tryLoadEmbeddedStandardModule(
+    Linkage* linkage,
+    Name* moduleName,
+    SourceLoc const& requestingLoc,
+    DiagnosticSink* sink)
+{
+    ISlangBlob* blob = slang_getEmbeddedStandardModule(moduleName->text.getBuffer());
+    if (!blob)
+        return nullptr;
+
+    auto pathInfo = PathInfo::makeFromString(moduleName->text + ".slang-module");
+    RefPtr<Module> module = linkage->loadModuleImpl(
+        moduleName,
+        pathInfo,
+        blob,
+        requestingLoc,
+        sink,
+        nullptr,
+        ModuleBlobType::IR);
+    if (module)
+        diagnoseExperimentalStandardModule(linkage, module, moduleName, requestingLoc, sink);
+    return module;
 }
 
 static SHA1::Digest computeSourceBlobDigest(ISlangBlob* blob)
@@ -1739,7 +1789,13 @@ RefPtr<Module> Linkage::findOrImportModule(
     }
 
     // Fallback: If the normal search failed, we will just search the whatever modules
-    // from our standard module search path
+    // from our standard module search path. Modules embedded in the slang library
+    // take precedence over the on-disk standard module directory.
+    if (auto embeddedModule = tryLoadEmbeddedStandardModule(this, moduleName, requestingLoc, sink))
+    {
+        return embeddedModule;
+    }
+
     auto standardModuleDirPath = getStandardModuleDirPath();
     if (standardModuleDirPath.getLength() > 0)
     {
@@ -1764,17 +1820,12 @@ RefPtr<Module> Linkage::findOrImportModule(
                     ModuleBlobType::IR);
                 if (module)
                 {
-                    if (auto irModule = module->getIRModule())
-                    {
-                        if (irModule->getModuleInst()
-                                ->findDecoration<IRExperimentalModuleDecoration>() &&
-                            !m_optionSet.getBoolOption(CompilerOptionName::ExperimentalFeature))
-                        {
-                            sink->diagnose(Diagnostics::NeedToEnableExperimentFeature{
-                                .module = getText(moduleName),
-                                .loc = requestingLoc});
-                        }
-                    }
+                    diagnoseExperimentalStandardModule(
+                        this,
+                        module,
+                        moduleName,
+                        requestingLoc,
+                        sink);
                     return module;
                 }
             }

@@ -313,6 +313,7 @@ works for any given binary.
 | `SLANG_ENABLE_SLANG_GLSLANG`          | `TRUE`                        | Enable glslang dependency and slang-glslang wrapper target                                                                               |
 | `SLANG_EMBED_SLANG_GLSLANG`           | `FALSE`                       | Link the slang-glslang wrapper into slang-compiler instead of runtime loading (see "Static linking")                                     |
 | `SLANG_BUNDLE_STATIC_LIB`             | `FALSE`                       | Merge slang-compiler and all static libraries it links into one archive (requires SLANG_LIB_TYPE=STATIC)                                 |
+| `SLANG_EMBED_STANDARD_MODULES`        | `FALSE`                       | Embed the pre-compiled standard modules (`slang.neural`, `experimental.workgraph`) in slang-compiler (requires SLANG_EMBED_CORE_MODULE)   |
 | `SLANG_ENABLE_SLANG_PROXY`            | `TRUE`                        | Build the legacy `slang.dll` proxy and `libslang` symlink backward-compatibility outputs for `slang-compiler`                           |
 | `SLANG_ENABLE_TESTS`                  | `TRUE`                        | Enable test targets, requires `SLANG_ENABLE_SLANG_RHI`; some tests require other CMake options                                           |
 | `SLANG_ENABLE_EXAMPLES`               | `TRUE`                        | Enable example targets, requires SLANG_ENABLE_SLANG_RHI                                                                                  |
@@ -648,6 +649,7 @@ cmake --preset default \
   -DSLANG_EMBED_SLANG_GLSLANG=ON \
   -DSLANG_ENABLE_SLANG_GLSLANG=OFF \
   -DSLANG_BUNDLE_STATIC_LIB=ON \
+  -DSLANG_EMBED_STANDARD_MODULES=ON \
   -DSLANG_SLANG_LLVM_FLAVOR=DISABLE \
   -DSLANG_ENABLE_DXIL=OFF \
   -DSLANG_ENABLE_GFX=OFF \
@@ -674,47 +676,57 @@ Caveats:
   on-disk cache are both unavailable, `slang-api.cpp` falls back to
   `compileBuiltinModule(GLSL, 0)` and compiles it from embedded source. Omitting it costs
   startup time on sessions created with `enableGLSL`, not functionality.
-- Statically linked or not, the standard modules under
-  `lib/slang-standard-module-<version>/` are still loaded from disk if a shader imports
-  them (`slang.neural`, `experimental.workgraph`, ...). `getStandardModuleDirPath()` in
-  `slang-session.cpp` locates them next to whichever binary contains
+- The standard modules (`slang.neural`, `experimental.workgraph`) are pre-compiled
+  `.slang-module` files. Without `SLANG_EMBED_STANDARD_MODULES=ON` they are loaded from
+  `lib/slang-standard-module-<version>/` next to whichever binary contains
   `slang_createGlobalSession`, which for a static build is the host executable, so that
-  directory has to be deployed alongside it. See the note below on excluding them.
+  directory has to be deployed alongside it. See the section below on embedding them.
 - The `slang-glslang` module is built with `-Wl,--exclude-libs,ALL`, which keeps the
   glslang and SPIRV-Tools symbols private. The static archive cannot do that at link
   time, so a `SHARED` build that also sets `SLANG_EMBED_SLANG_GLSLANG=ON` may re-export
   some of them. If your application links its own copy of SPIRV-Tools, expect
   duplicate-symbol conflicts.
 
-#### The standard modules are excluded from a static distribution
+#### Embedding the standard modules
 
-The standard modules are the one part of Slang that a static link cannot absorb. They are
-pre-compiled `.slang-module` data files, not code, and `findStandardModulePath()` resolves
-them by looking for `<dir-of-slang_createGlobalSession>/slang-standard-module-<version>/`
-on disk at import time. Linking Slang into a host binary does not change that; it only
-moves the directory the compiler searches, from next to `libslang-compiler.so` to next to
-the host executable.
+The standard modules are pre-compiled `.slang-module` data files, not code. By default
+`findStandardModulePath()` in `slang-session.cpp` resolves them by looking for
+`<dir-of-slang_createGlobalSession>/slang-standard-module-<version>/` on disk at import
+time. Linking Slang into a host binary does not change that; it only moves the directory
+the compiler searches, from next to `libslang-compiler.so` to next to the host executable.
+Build systems that consume a static library (Cargo, in particular) have no supported way
+to place data files next to the final executable.
 
-For a static distribution whose whole point is a single self-contained binary, shipping a
-5.9 MB sibling directory defeats the exercise, and build systems that consume a static
-library (Cargo, in particular) have no supported way to place data files next to the final
-executable. So a static release built from this branch deliberately ships **only** the
-library and headers, and drops `slang.neural` and `experimental.workgraph`.
+`SLANG_EMBED_STANDARD_MODULES=ON` embeds both modules in `slang-compiler` instead. The
+build runs `slang-embed -binary` on each `.slang-module` to produce a byte-array header
+(`slang-neural-module-generated.h`, `slang-workgraph-module-generated.h` under
+`build/source/standard-modules/`), compiles the object library
+`slang-embedded-standard-modules` from them, and links it into `slang-compiler`.
+`SLANG_BUNDLE_STATIC_LIB` then carries the bytes into the single archive with no further
+configuration. A static release from this branch enables the option, ships only the
+library and headers, and resolves `import slang.neural;` and
+`import experimental.workgraph;` with no files on disk. The two modules add about 5.5 MB
+to the library.
 
-The cost is bounded and explicit: a shader that says `import slang.neural;` or
-`import experimental.workgraph;` gets a module-not-found diagnostic instead of compiling.
-Nothing else is affected — `findStandardModulePath()` returns an empty path when the
-directory is missing, and the core module is embedded in the binary
-(`SLANG_EMBED_CORE_MODULE`), so ordinary SPIR-V and WGSL compilation needs no files on
-disk at all.
+The option is independent of `SLANG_LIB_TYPE`; a shared `libslang-compiler` can embed the
+modules as well. It requires `SLANG_EMBED_CORE_MODULE=ON`: `slang-bootstrap` compiles the
+modules, and with the core module not embedded `slang-bootstrap` links the `slang`
+library itself, so embedding the modules into that library is a dependency cycle. CMake
+reports the conflict at configure time.
 
-Both modules are built and installed unconditionally today
-(`add_custom_target(... ALL ...)` plus an unconditional `install()` in
-`source/standard-modules/neural/CMakeLists.txt` and
-`source/standard-modules/experimental/CMakeLists.txt`), so excluding them is currently a
-packaging step: omit `lib/slang-standard-module-<version>/` when assembling the release
-archive. If the build-time cost matters, gating both `add_subdirectory()` calls in
-`source/standard-modules/CMakeLists.txt` behind an option is the natural follow-up.
+The import search order is:
+
+1. The session's search paths and the directory of the importing file, for both
+   `.slang` source and `.slang-module` files. A user-provided module shadows the
+   embedded one.
+2. The embedded module, when the build embedded one under that name.
+3. `slang-standard-module-<version>/` on disk next to the library.
+
+Both modules are marked experimental, so an import requires `-experimental-feature`
+(`CompilerOptionName::ExperimentalFeature` through the API) whichever way it resolves.
+
+The on-disk directory is still built and installed with the option on; the static
+release workflow leaves it out of the archive.
 
 ## Deprecation of libslang and slang.dll filenames
 

@@ -251,6 +251,7 @@ set(slang_build_args
     ${CMAKE_CURRENT_BINARY_DIR}/slang-version-header
     ${CMAKE_CURRENT_BINARY_DIR}/../standard-modules/slang-standard-module-config-header
     ${slang_SOURCE_DIR}/tools
+    ${slang_SOURCE_DIR}/source/standard-modules
     EXPORT_MACRO_PREFIX
     SLANG
     EXPORT_TYPE_AS
@@ -287,6 +288,7 @@ set(slang_public_lib_args
     LINK_WITH_PRIVATE
     $<IF:$<BOOL:${SLANG_EMBED_CORE_MODULE}>,slang-embedded-core-module,slang-no-embedded-core-module>
     $<IF:$<BOOL:${SLANG_EMBED_CORE_MODULE_SOURCE}>,slang-embedded-core-module-source,slang-no-embedded-core-module-source>
+    $<IF:$<BOOL:${SLANG_EMBED_STANDARD_MODULES}>,slang-embedded-standard-modules,slang-no-embedded-standard-modules>
     INSTALL
     EXPORT_SET_NAME
     SlangTargets
@@ -340,6 +342,7 @@ else()
             slang-common-objects
             slang-no-embedded-core-module
             slang-embedded-core-module-source
+            slang-no-embedded-standard-modules
         OUTPUT_DIR generators
         FOLDER generators
         INSTALL_COMPONENT generators

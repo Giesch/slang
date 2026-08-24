@@ -23,6 +23,10 @@ foreach(shader_file ${workgraph_shader_sources})
     list(APPEND workgraph_copied_files ${dest_file})
 endforeach()
 
+# Determine which compiler to use for building the module.
+# For cross-compilation, use slang-bootstrap from SLANG_GENERATORS_PATH
+# (slang-bootstrap is a standalone tool with no external dependencies)
+# Otherwise, use the slang-bootstrap target built as part of this build.
 if(SLANG_GENERATORS_PATH)
     if(CMAKE_HOST_WIN32)
         set(CMAKE_HOST_EXECUTABLE_SUFFIX ".exe")
@@ -33,18 +37,14 @@ if(SLANG_GENERATORS_PATH)
         "${SLANG_GENERATORS_PATH}/slang-bootstrap${CMAKE_HOST_EXECUTABLE_SUFFIX}"
     )
     set(SLANG_COMPILER_DEPENDENCY)
-elseif(NOT SLANG_EMBED_CORE_MODULE)
-    set(SLANG_COMPILER slang-bootstrap)
-    set(SLANG_COMPILER_DEPENDENCY slang-bootstrap)
-elseif(SLANG_ENABLE_SLANGC)
-    set(SLANG_COMPILER "$<TARGET_FILE:slangc>")
-    set(SLANG_COMPILER_DEPENDENCY slangc slang)
 else()
+    # Build standard modules with slang-bootstrap so this target never requires
+    # slangc.exe, and so the slang library can embed the result without a
+    # dependency cycle. Load the generated core module so this step does not
+    # recompile it.
     set(SLANG_COMPILER slang-bootstrap)
     set(SLANG_COMPILER_DEPENDENCY slang-bootstrap)
 endif()
-# Every compiler selection, including an external generator, loads the archive produced by
-# generate_core_module so building the workgraph module does not compile the core module again.
 set(SLANG_COMPILER_CORE_MODULE_ARGS -load-core-module ${core_module_archive_without_timestamp})
 set(SLANG_COMPILER_EXTRA_DEPS generate_core_module)
 
@@ -63,6 +63,14 @@ add_custom_command(
 
 add_custom_target(slang-workgraph-module ALL DEPENDS ${workgraph_module_file})
 set_target_properties(slang-workgraph-module PROPERTIES FOLDER generated)
+
+if(SLANG_EMBED_STANDARD_MODULES)
+    slang_add_embedded_standard_module_header(
+        ${workgraph_module_file}
+        slang-workgraph-module-generated.h
+        slang-workgraph-module-header
+    )
+endif()
 
 install(
     DIRECTORY ${workgraph_output_dir}/
